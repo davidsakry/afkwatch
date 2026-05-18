@@ -38,7 +38,7 @@ Each module is a single self-contained script in `modules/`. To add your own sur
 ## Install
 
 ```bash
-git clone https://github.com/YOURUSER/afkwatch.git
+git clone https://github.com/davidsakry/afkwatch.git
 cd afkwatch
 ./install.sh                  # symlinks bin into ~/.local/bin
 ./install.sh --with-timer     # also installs hourly snapshot systemd timer
