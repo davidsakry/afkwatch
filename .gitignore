@@ -1,0 +1,8 @@
+# local user data — these never live in the repo
+snapshots/
+*.log
+*.swp
+.DS_Store
+
+# local config
+config/afkwatch.conf

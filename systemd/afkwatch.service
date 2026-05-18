@@ -1,0 +1,8 @@
+[Unit]
+Description=afkwatch hourly snapshot
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=__AFKWATCH_BIN__ snapshot hourly
+Nice=10

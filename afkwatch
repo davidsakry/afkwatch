@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# afkwatch - Lightweight Linux "did anyone touch my machine while I was away?" monitor.
+#
+# Usage:
+#   afkwatch arm                Snapshot current state and mark it as the AFK baseline.
+#   afkwatch check              Diff current state against the AFK baseline (run on return).
+#   afkwatch snapshot [label]   Take a snapshot (optionally labeled). Stored in history.
+#   afkwatch diff [a] [b]       Diff two snapshots (default: last two).
+#   afkwatch list               List stored snapshots.
+#   afkwatch modules            List installed modules.
+#   afkwatch report             Pretty-printed diff against AFK baseline.
+#   afkwatch prune [N]          Keep only the most recent N snapshots (default 50).
+#   afkwatch version
+#
+# Snapshots live in $AFKWATCH_DATA (default ~/.local/share/afkwatch).
+# Configuration lives in $AFKWATCH_CONFIG (default ~/.config/afkwatch/afkwatch.conf).
+
+set -euo pipefail
+
+AFKWATCH_VERSION="0.1.0"
+AFKWATCH_HOME="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+AFKWATCH_MODULES_DIR="${AFKWATCH_MODULES_DIR:-$AFKWATCH_HOME/modules}"
+AFKWATCH_DATA="${AFKWATCH_DATA:-$HOME/.local/share/afkwatch}"
+AFKWATCH_CONFIG_DIR="${AFKWATCH_CONFIG_DIR:-$HOME/.config/afkwatch}"
+AFKWATCH_CONFIG="${AFKWATCH_CONFIG:-$AFKWATCH_CONFIG_DIR/afkwatch.conf}"
+
+mkdir -p "$AFKWATCH_DATA/snapshots" "$AFKWATCH_CONFIG_DIR"
+
+# Load config if present (overrides env above).
+# shellcheck disable=SC1090
+[[ -f "$AFKWATCH_CONFIG" ]] && source "$AFKWATCH_CONFIG"
+
+c_red()    { printf '\033[31m%s\033[0m' "$*"; }
+c_green()  { printf '\033[32m%s\033[0m' "$*"; }
+c_yellow() { printf '\033[33m%s\033[0m' "$*"; }
+c_blue()   { printf '\033[34m%s\033[0m' "$*"; }
+c_dim()    { printf '\033[2m%s\033[0m' "$*"; }
+c_bold()   { printf '\033[1m%s\033[0m' "$*"; }
+
+list_modules() {
+    find "$AFKWATCH_MODULES_DIR" -maxdepth 1 -type f -name '*.sh' | sort
+}
+
+module_meta() {
+    local module="$1" field="$2"
+    bash "$module" "$field" 2>/dev/null || echo "?"
+}
+
+cmd_modules() {
+    printf "%-4s %-18s %s\n" "ID" "NAME" "DESCRIPTION"
+    printf "%-4s %-18s %s\n" "---" "----" "-----------"
+    while read -r m; do
+        local fname id name desc
+        fname="$(basename "$m" .sh)"
+        id="${fname%%-*}"
+        name="$(module_meta "$m" name)"
+        desc="$(module_meta "$m" description)"
+        printf "%-4s %-18s %s\n" "$id" "$name" "$desc"
+    done < <(list_modules)
+}
+
+cmd_snapshot() {
+    local label="${1:-auto}"
+    local ts
+    ts="$(date +%Y%m%d-%H%M%S)"
+    local outdir="$AFKWATCH_DATA/snapshots/${ts}_${label}"
+    mkdir -p "$outdir"
+    echo "$ts" > "$outdir/.timestamp"
+    echo "$label" > "$outdir/.label"
+
+    local count=0
+    while read -r m; do
+        local name
+        name="$(module_meta "$m" name)"
+        local mdir="$outdir/$name"
+        mkdir -p "$mdir"
+        if bash "$m" snapshot "$mdir" 2>"$mdir/.errors"; then
+            count=$((count + 1))
+        fi
+        [[ -s "$mdir/.errors" ]] || rm -f "$mdir/.errors"
+    done < <(list_modules)
+
+    echo "$outdir"
+    c_dim "snapshot: $count modules captured at $ts"; echo
+}
+
+latest_snapshot() {
+    find "$AFKWATCH_DATA/snapshots" -maxdepth 1 -mindepth 1 -type d | sort | tail -n 1
+}
+
+nth_latest_snapshot() {
+    local n="${1:-1}"
+    find "$AFKWATCH_DATA/snapshots" -maxdepth 1 -mindepth 1 -type d | sort | tail -n "$n" | head -n 1
+}
+
+snapshot_by_label() {
+    local label="$1"
+    find "$AFKWATCH_DATA/snapshots" -maxdepth 1 -mindepth 1 -type d -name "*_${label}" | sort | tail -n 1
+}
+
+cmd_arm() {
+    c_yellow "[arming]"; echo " taking AFK baseline snapshot..."
+    cmd_snapshot "afk" > /dev/null
+    local snap
+    snap="$(snapshot_by_label afk)"
+    echo "$snap" > "$AFKWATCH_DATA/.armed"
+    c_green "[armed]"; echo " baseline: $(basename "$snap")"
+    c_dim "  run 'afkwatch check' when you return to see what happened."; echo
+}
+
+cmd_diff() {
+    local a="${1:-}" b="${2:-}"
+    if [[ -z "$a" ]]; then
+        a="$(nth_latest_snapshot 2)"
+        b="$(nth_latest_snapshot 1)"
+    elif [[ -z "$b" ]]; then
+        b="$(latest_snapshot)"
+    fi
+    [[ -z "$a" || -z "$b" || ! -d "$a" || ! -d "$b" ]] && { echo "error: need two snapshots to diff (have you run 'afkwatch snapshot'?)"; exit 1; }
+
+    c_bold "afkwatch diff"; echo
+    c_dim "  baseline: $(basename "$a")"; echo
+    c_dim "  current:  $(basename "$b")"; echo
+    echo
+
+    local findings=0
+    while read -r m; do
+        local name desc
+        name="$(module_meta "$m" name)"
+        desc="$(module_meta "$m" description)"
+        local adir="$a/$name" bdir="$b/$name"
+        [[ -d "$adir" && -d "$bdir" ]] || continue
+
+        local out
+        out="$(bash "$m" diff "$adir" "$bdir" 2>/dev/null || true)"
+        if [[ -n "$out" ]]; then
+            c_yellow "[$name]"; echo " $desc"
+            echo "$out" | sed 's/^/  /'
+            echo
+            findings=$((findings + 1))
+        fi
+    done < <(list_modules)
+
+    if [[ $findings -eq 0 ]]; then
+        c_green "[clean]"; echo " no changes detected across $(list_modules | wc -l) modules."
+    else
+        c_yellow "[$findings module(s) reported changes]"; echo
+    fi
+}
+
+cmd_check() {
+    if [[ ! -f "$AFKWATCH_DATA/.armed" ]]; then
+        echo "error: not armed. Run 'afkwatch arm' before going AFK."
+        exit 1
+    fi
+    local baseline
+    baseline="$(cat "$AFKWATCH_DATA/.armed")"
+    if [[ ! -d "$baseline" ]]; then
+        echo "error: armed baseline missing ($baseline)"
+        exit 1
+    fi
+    c_yellow "[checking]"; echo " taking current snapshot..."
+    cmd_snapshot "check" > /dev/null
+    local current
+    current="$(snapshot_by_label check)"
+    echo
+    cmd_diff "$baseline" "$current"
+}
+
+cmd_list() {
+    printf "%-30s %-10s %s\n" "SNAPSHOT" "LABEL" "WHEN"
+    printf "%-30s %-10s %s\n" "--------" "-----" "----"
+    for d in "$AFKWATCH_DATA/snapshots"/*/; do
+        [[ -d "$d" ]] || continue
+        local name label when
+        name="$(basename "$d")"
+        label="$(cat "$d/.label" 2>/dev/null || echo "?")"
+        when="$(cat "$d/.timestamp" 2>/dev/null || echo "?")"
+        printf "%-30s %-10s %s\n" "$name" "$label" "$when"
+    done
+}
+
+cmd_prune() {
+    local keep="${1:-50}"
+    local total
+    total=$(find "$AFKWATCH_DATA/snapshots" -maxdepth 1 -mindepth 1 -type d | wc -l)
+    local to_remove=$((total - keep))
+    if (( to_remove <= 0 )); then
+        echo "nothing to prune ($total snapshots, keeping $keep)"
+        return
+    fi
+    find "$AFKWATCH_DATA/snapshots" -maxdepth 1 -mindepth 1 -type d | sort | head -n "$to_remove" | while read -r d; do
+        echo "removing $(basename "$d")"
+        rm -rf "$d"
+    done
+}
+
+cmd_version() {
+    echo "afkwatch $AFKWATCH_VERSION"
+}
+
+cmd_help() {
+    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        arm)       cmd_arm "$@" ;;
+        check)     cmd_check "$@" ;;
+        snapshot)  cmd_snapshot "$@" ;;
+        diff)      cmd_diff "$@" ;;
+        list)      cmd_list "$@" ;;
+        modules)   cmd_modules "$@" ;;
+        report)    cmd_check "$@" ;;
+        prune)     cmd_prune "$@" ;;
+        version|-v|--version) cmd_version ;;
+        help|-h|--help|"") cmd_help ;;
+        *) echo "unknown command: $cmd"; cmd_help; exit 1 ;;
+    esac
+}
+
+main "$@"

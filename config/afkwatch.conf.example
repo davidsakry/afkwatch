@@ -1,0 +1,14 @@
+# afkwatch configuration. Copy to ~/.config/afkwatch/afkwatch.conf and edit.
+# This file is sourced as bash, so use shell syntax.
+
+# Where snapshots are stored.
+# AFKWATCH_DATA="$HOME/.local/share/afkwatch"
+
+# Where to look for modules.
+# AFKWATCH_MODULES_DIR="$HOME/afkwatch/modules"
+
+# (Future use) Extra paths to watch in the files module — newline-separated.
+# AFKWATCH_EXTRA_WATCHED_FILES="
+# $HOME/important.txt
+# /etc/your-thing.conf
+# "
