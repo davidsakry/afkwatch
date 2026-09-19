@@ -61,10 +61,65 @@ To add a new module:
 4. `chmod +x` and put it in `modules/`. Done — the CLI auto-discovers it.
 
 Module ideas for v0.2+:
-- `dns` — `/etc/resolv.conf` + recent DNS query patterns
 - `kernel` — loaded kernel modules (`lsmod`), kernel command line
 - `browser` — newly-installed browser extensions
 - `shell_history` — diff of `.bash_history` / `.zsh_history`
 - `clipboard` — clipboard manager history changes
 - `screenshot` — `import` a desktop screenshot at snapshot time (visual baseline)
 - `auditd` — bridge to `ausearch` for kernel-level FS events
+
+## Note: per-network state (the `lan-trust` module)
+
+Most modules diff a single global state. `lan-trust` is the first module that
+keys its state **per network** (`net-<sanitised>-<hash>.kv`), because the
+question it asks is *"has a network I already trust changed shape?"* — not *"is
+this state different from the last snapshot?"*
+
+That distinction matters on a laptop. Moving from home to a hotel legitimately
+changes the gateway, its MAC, the DHCP server and the DNS servers all at once. A
+naive global diff would fire on every single network change and be trained away
+as noise within a week.
+
+Three consequences fall out of that, each of which was a bug before it was a
+design note:
+
+**1. Snapshots carry forward every network ever seen.** The module keeps a
+persistent baseline (`~/.local/share/afkwatch/lan-trust-baseline/`, override with
+`$AFKWATCH_LAN_BASELINE`), refreshes the currently-connected networks into it,
+then copies *the whole baseline* into the snapshot. Without this, a
+home → hotel → home sequence diffs the hotel snapshot against the home one, your
+own network is absent from the "old" side, and it gets reported as brand new
+after every trip — precisely the false positive the module exists to avoid.
+Baseline writes are atomic (`mv` over a temp file) so a torn `.kv` can never be
+mistaken for a real change.
+
+**2. The filename key includes a digest.** Sanitising alone is many-to-one:
+`Cafe/Guest` and `Cafe:Guest` both flatten to `Cafe_Guest`, silently sharing one
+baseline so a genuinely different network inherits a trusted one's history. The
+key is therefore `<sanitised>-<sha256[:8] of the raw identity>`, and the raw
+identity is stored in the file as `network=` (skipped when diffing).
+
+**3. The diff compares the union of both files' keys.** Iterating only the new
+file misses a field that *disappeared* — a partial snapshot or a producer
+version change could drop `security=` entirely and report nothing.
+
+BSSID changes are deliberately downgraded to a `note:` — on any mesh or
+multi-AP network, roaming between APs is normal and would otherwise be a
+constant false positive. A **security downgrade** on a known SSID (e.g. WPA2 →
+open) is the evil-twin signal worth alerting on, not the BSSID itself.
+
+A first-seen network **warns** and prints its full identity, so the gateway and
+DNS you were handed are on screen at the moment you'd want to look at them.
+
+### What this module cannot see
+
+Detecting *two* DHCP servers racing on the wire genuinely needs a packet capture
+(root + `tcpdump`), which is outside the "works without root" design goal. What
+this module catches instead is the **outcome** of such a race — the moment the
+answer you were given changes — which is consistent with afkwatch's
+state-diffing premise throughout. A rogue server that never wins a race stays
+invisible here.
+
+IPv6 is recorded (`gateway_ip6`, `link_dns6`) because RDNSS-over-router-
+advertisement is a separate hijack path from DHCPv4 and would otherwise be a
+blind spot on dual-stack networks.
