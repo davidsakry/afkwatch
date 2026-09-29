@@ -26,6 +26,7 @@ Those are signature-based scanners — they're great for matching *known* malwar
 | `logins`      | `last`, `lastb`, `who`, sshd journal events |
 | `processes`   | Process tree (user + command) — flags new processes, especially shell/remote-access-flavored ones |
 | `network`     | Listening ports (`ss -tunlp`), established connections, route table |
+| `lan-trust`   | Per-network gateway MAC, DHCP server, DNS and AP identity — catches rogue DHCP servers, ARP spoofing, DNS hijack and evil-twin APs |
 | `files`       | sha256 of shell rc files, `~/.ssh/*`, `/etc/passwd`, `/etc/sudoers`, etc. |
 | `cron`        | User crontab, `/etc/cron.*`, systemd timers (user + system) |
 | `autostart`   | `~/.config/autostart`, user systemd units, enabled system services |
